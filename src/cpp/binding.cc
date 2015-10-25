@@ -21,6 +21,7 @@
 #include <node.h>
 #include <node_buffer.h>
 #include <v8.h>
+#include <uv.h>
 
 #include "boost/endian.hpp"
 #ifdef BOOST_BIG_ENDIAN
@@ -50,26 +51,20 @@ class async_stub : public bsdiff_dat {
   async_stub() : bsdiff_dat(), err(0) {
   }
 
-  ~async_stub() {
-    curHandle.Dispose();
-    refHandle.Dispose();
-    ctrlHandle.Dispose();
-    diffHandle.Dispose();
-    xtraHandle.Dispose();
-    callback.Dispose();
-  }
-
 };
 
 static inline Handle<Value> ThrowTypeError(const char *err) {
-  return ThrowException(Exception::TypeError(String::New(err)));
+  return Isolate::GetCurrent()->ThrowException(
+    Exception::TypeError(String::NewFromUtf8(Isolate::GetCurrent(), err)));
 }
 
 static inline void Error(async_stub *shim) {
   const char *msg = shim->err == -1 ? "Corrupt data" : "Internal error";
-  Handle<Value> argv[] = { Exception::Error(String::New(msg)) };
+  Handle<Value> argv[] = { Exception::Error(String::NewFromUtf8(Isolate::GetCurrent(), msg)) };
   TryCatch tryCatch;
-  shim->callback->Call(Context::GetCurrent()->Global(), 1, argv);
+  v8::Local<v8::Function> cb = v8::Local<v8::Function>::New(Isolate::GetCurrent(), shim->callback);
+  v8::Local<v8::Context> context = Isolate::GetCurrent()->GetCurrentContext();
+  cb->Call(context->Global(), 1, argv);
   if (tryCatch.HasCaught()) FatalException(tryCatch);
 }
 
@@ -82,8 +77,8 @@ static void AsyncDiff(uv_work_t *req) {
   shim->err = bsdiff(shim);
 }
 
-static void AfterDiff(uv_work_t *req) {
-  HandleScope scope;
+static void AfterDiff(uv_work_t *req, int) {
+  HandleScope scope(Isolate::GetCurrent());
   async_stub *shim = static_cast<async_stub *>(req->data);
 
   if (shim->err != 0) return Error(shim);
@@ -93,14 +88,17 @@ static void AfterDiff(uv_work_t *req) {
     shim->ctrl[i] = bswap_32(shim->ctrl[i]);
 #endif
 
-  Buffer *ctrl = Buffer::New(reinterpret_cast<char *>(shim->ctrl.data()),
+  v8::Local<v8::Object> ctrl = Buffer::New(reinterpret_cast<char *>(shim->ctrl.data()),
                              shim->ctrl.size() * sizeof(int));
-  Buffer *diff = Buffer::New(shim->diff, shim->difflen, DeleteMemory, NULL);
-  Buffer *xtra = Buffer::New(shim->xtra, shim->xtralen, DeleteMemory, NULL);
+  v8::Local<v8::Object> diff = Buffer::New(shim->diff, shim->difflen, DeleteMemory, NULL);
+  v8::Local<v8::Object> xtra = Buffer::New(shim->xtra, shim->xtralen, DeleteMemory, NULL);
 
-  Handle<Value> argv[] = { Null(), ctrl->handle_, diff->handle_, xtra->handle_ };
+  Handle<Value> argv[] = { Null(Isolate::GetCurrent()), ctrl, diff, xtra };
   TryCatch tryCatch;
-  shim->callback->Call(Context::GetCurrent()->Global(), 4, argv);
+
+  v8::Local<v8::Function> cb = v8::Local<v8::Function>::New(Isolate::GetCurrent(), shim->callback);
+  v8::Local<v8::Context> context = Isolate::GetCurrent()->GetCurrentContext();
+  cb->Call(context->Global(), 4, argv);
   if (tryCatch.HasCaught()) FatalException(tryCatch);
 
   delete shim;
@@ -112,17 +110,20 @@ static void AsyncPatch(uv_work_t *req) {
   shim->err = bspatch(shim);
 }
 
-static void AfterPatch(uv_work_t *req) {
-  HandleScope scope;
+static void AfterPatch(uv_work_t *req, int) {
+  HandleScope scope(Isolate::GetCurrent());
   async_stub *shim = static_cast<async_stub *>(req->data);
 
   if (shim->err != 0) return Error(shim);
 
-  Buffer *cur = Buffer::New(shim->curdat, shim->curlen, DeleteMemory, NULL);
+  v8::Local<v8::Object> cur = Buffer::New(shim->curdat, shim->curlen, DeleteMemory, NULL);
 
-  Handle<Value> argv[] = { Null(), cur->handle_ };
+  Handle<Value> argv[] = { Null(Isolate::GetCurrent()), cur };
   TryCatch tryCatch;
-  shim->callback->Call(Context::GetCurrent()->Global(), 2, argv);
+
+  v8::Local<v8::Function> cb = v8::Local<v8::Function>::New(Isolate::GetCurrent(), shim->callback);
+  v8::Local<v8::Context> context = Isolate::GetCurrent()->GetCurrentContext();
+  cb->Call(context->Global(), 2, argv);
   if (tryCatch.HasCaught()) FatalException(tryCatch);
 
   delete shim;
@@ -131,18 +132,19 @@ static void AfterPatch(uv_work_t *req) {
 
 } // anonymous namespace
 
-Handle<Value> Diff(const Arguments& args) {
-  HandleScope scope;
+void Diff(const v8::FunctionCallbackInfo<v8::Value>& info) {
+  HandleScope scope(Isolate::GetCurrent());
 
-  if (args.Length() != 3 ||
-      !Buffer::HasInstance(args[0]) ||  // current
-      !Buffer::HasInstance(args[1]) ||  // reference
-      !args[2]->IsFunction())           // callback
-    return ThrowTypeError("Invalid arguments");
+  if (info.Length() != 3 ||
+      !Buffer::HasInstance(info[0]) ||  // current
+      !Buffer::HasInstance(info[1]) ||  // reference
+      !info[2]->IsFunction())           // callback
+    ThrowTypeError("Invalid arguments");
+    return;
 
-  Local<Object> cur = args[0]->ToObject();
-  Local<Object> ref = args[1]->ToObject();
-  Local<Function> callback = Local<Function>::Cast(args[2]);
+  Local<Object> cur = info[0]->ToObject();
+  Local<Object> ref = info[1]->ToObject();
+  Local<Function> callback = Local<Function>::Cast(info[2]);
 
   uv_work_t *req = new uv_work_t;
   async_stub *shim = new async_stub;
@@ -153,35 +155,34 @@ Handle<Value> Diff(const Arguments& args) {
   shim->curlen = Buffer::Length(cur);
   shim->reflen = Buffer::Length(ref);
 
-  shim->curHandle = Persistent<Value>::New(cur);
-  shim->refHandle = Persistent<Value>::New(ref);
+  shim->curHandle.Reset(Isolate::GetCurrent(), cur);
+  shim->refHandle.Reset(Isolate::GetCurrent(), ref);
 
-  shim->callback = Persistent<Function>::New(callback);
+  shim->callback.Reset(Isolate::GetCurrent(), callback);
 
   req->data = shim;
   uv_queue_work(uv_default_loop(), req, AsyncDiff, AfterDiff);
-
-  return Undefined();
 }
 
-Handle<Value> Patch(const Arguments& args) {
-  HandleScope scope;
+void Patch(const v8::FunctionCallbackInfo<v8::Value>& info) {
+  HandleScope scope(Isolate::GetCurrent());
 
-  if (args.Length() != 6 ||
-      !args[0]->IsNumber() ||           // current
-      !Buffer::HasInstance(args[1]) ||  // reference
-      !Buffer::HasInstance(args[2]) ||  // control
-      !Buffer::HasInstance(args[3]) ||  // diff
-      !Buffer::HasInstance(args[4]) ||  // extra
-      !args[5]->IsFunction())           // callback
-    return ThrowTypeError("Invalid arguments");
+  if (info.Length() != 6 ||
+      !info[0]->IsNumber() ||           // current
+      !Buffer::HasInstance(info[1]) ||  // reference
+      !Buffer::HasInstance(info[2]) ||  // control
+      !Buffer::HasInstance(info[3]) ||  // diff
+      !Buffer::HasInstance(info[4]) ||  // extra
+      !info[5]->IsFunction())           // callback
+    ThrowTypeError("Invalid arguments");
+    return;
 
-  uint32_t curlen = args[0]->Uint32Value();
-  Local<Object> ref = args[1]->ToObject();
-  Local<Object> ctrl = args[2]->ToObject();
-  Local<Object> diff = args[3]->ToObject();
-  Local<Object> xtra = args[4]->ToObject();
-  Local<Function> callback = Local<Function>::Cast(args[5]);
+  uint32_t curlen = info[0]->Uint32Value();
+  Local<Object> ref = info[1]->ToObject();
+  Local<Object> ctrl = info[2]->ToObject();
+  Local<Object> diff = info[3]->ToObject();
+  Local<Object> xtra = info[4]->ToObject();
+  Local<Function> callback = Local<Function>::Cast(info[5]);
 
   uv_work_t *req = new uv_work_t;
   async_stub *shim = new async_stub;
@@ -205,23 +206,21 @@ Handle<Value> Patch(const Arguments& args) {
   shim->difflen = Buffer::Length(diff);
   shim->xtralen = Buffer::Length(xtra);
 
-  shim->refHandle = Persistent<Value>::New(ref);
-  shim->ctrlHandle = Persistent<Value>::New(ctrl);
-  shim->diffHandle = Persistent<Value>::New(diff);
-  shim->xtraHandle = Persistent<Value>::New(xtra);
+  shim->refHandle.Reset(Isolate::GetCurrent(), ref);
+  shim->ctrlHandle.Reset(Isolate::GetCurrent(), ctrl);
+  shim->diffHandle.Reset(Isolate::GetCurrent(), diff);
+  shim->xtraHandle.Reset(Isolate::GetCurrent(), xtra);
 
-  shim->callback = Persistent<Function>::New(callback);
+  shim->callback.Reset(Isolate::GetCurrent(), callback);
 
   req->data = shim;
   uv_queue_work(uv_default_loop(), req, AsyncPatch, AfterPatch);
-
-  return Undefined();
 }
 
 extern "C" {
 
 static void init(Handle<Object> target) {
-  HandleScope scope;
+  HandleScope scope(Isolate::GetCurrent());
   NODE_SET_METHOD(target, "diff", Diff);
   NODE_SET_METHOD(target, "patch", Patch);
 }

@@ -1,7 +1,7 @@
 {
   "name": "bsdiff",
   "description": "Bindings to bsdiff",
-  "homepage": "https://github.com/mikepb/node-bsdiff",
+  "homepage": "https://github.com/jorj1988/node-bsdiff",
   "version": "0.0.1",
   "main": "lib",
   "engines": {
@@ -15,7 +15,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/mikepb/node-bsdiff.git"
+    "url": "https://github.com/jorj1988/node-bsdiff.git"
   },
   "bugs": {
     "url": "https://github.com/mikepb/node-bsdiff/issues"

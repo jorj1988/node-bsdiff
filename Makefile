@@ -4,8 +4,8 @@ REPORTER=dot
 PATH:=./node_modules/.bin:${PATH}
 
 build:
-	if [ ! -d build ]; then node-waf configure; fi
-	node-waf build
+	if [ ! -d build ]; then node-gyp configure; fi
+	node-gyp build
 
 coffee: lib/index.js
 	coffee --bare --compile --output lib src/coffee
