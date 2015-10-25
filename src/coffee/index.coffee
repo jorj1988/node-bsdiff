@@ -16,7 +16,7 @@
 
 ###
 
-binding = require './build/Release/bsdiff.node'
+binding = require '../build/Release/bsdiff.node'
 module.exports = exports = binding
 
 ###
