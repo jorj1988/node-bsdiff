@@ -9,7 +9,7 @@
   },
   "scripts": {
     "prepublish": "make coffee",
-    "preinstall": "make build clean",
+    "preinstall": "make build",
     "install": "make coffee",
     "test": "make test"
   },
