@@ -7,7 +7,7 @@ build:
 	if [ ! -d build ]; then node-gyp configure; fi
 	node-gyp build
 
-coffee: lib/index.js
+coffee:
 	coffee --bare --compile --output lib src/coffee
 
 clean:
